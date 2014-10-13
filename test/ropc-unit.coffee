@@ -344,6 +344,213 @@ describe "Resource Owner Password Credentials flow", ->
                             @validateClient.should.not.have.been.called
                             @grantUserToken.should.not.have.been.called
 
+            describe "that has grant_type=refresh_token", ->
+                beforeEach -> @req.body.grant_type = "refresh_token"
+
+                describe "with a basic access authentication header", ->
+                    beforeEach ->
+                        [@clientId, @clientSecret, @username, @password] = ["clientId123", "clientSecret456", undefined, undefined]
+                        @req.authorization =
+                            scheme: "Basic"
+                            basic: { username: @clientId, password: @clientSecret }
+
+                    describe "and has a refresh_token field", ->
+                        beforeEach ->
+                            @refreshToken = "username123"
+                            @req.body.refresh_token = @refreshToken
+
+                            it "should validate the client, with client ID/secret from the basic authentication", ->
+                                @doIt()
+
+                                @validateClient.should.have.been.calledWith({ @clientId, @clientSecret }, @req)
+
+                          describe "when `validateClient` calls back with `true`", ->
+                              beforeEach -> @validateClient.yields(null, true)
+
+                              it "should use the refresh_token body field to grant a token", ->
+                                  @doIt()
+
+                                  @grantUserToken.should.have.been.calledWith(
+                                      { @clientId, @clientSecret, @username, @password, @refreshToken },
+                                      @req
+                                  )
+
+                              describe "when `grantUserToken` calls back with a token", ->
+                                  beforeEach ->
+                                      @token = "token123"
+                                      @grantUserToken.yields(null, @token)
+
+                                  describe "and a `grantScopes` hook is defined", ->
+                                      beforeEach ->
+                                          baseDoIt = @doItWithScopes
+                                          @doIt = =>
+                                              baseDoIt()
+                                              @postToTokenEndpoint()
+                                          @requestedScopes = ["one", "two"]
+                                          @req.body.scope = @requestedScopes.join(" ")
+
+                                      it "should use credentials and requested scopes to grant scopes", ->
+                                          @doIt()
+
+                                          @grantScopes.should.have.been.calledWith(
+                                              { @clientId, @clientSecret, @username, @password, @token },
+                                              @requestedScopes
+                                          )
+
+                                      describe "when `grantScopes` calls back with an array of granted scopes", ->
+                                          beforeEach ->
+                                              @grantedScopes = ["three"]
+                                              @grantScopes.yields(null, @grantedScopes)
+
+                                          it "should send a response with access_token, token_type, scope, and " +
+                                             "expires_in set, where scope is limited to the granted scopes", ->
+                                              @doIt()
+
+                                              @res.send.should.have.been.calledWith(
+                                                  access_token: @token,
+                                                  token_type: "Bearer"
+                                                  expires_in: tokenExpirationTime,
+                                                  scope: @grantedScopes.join(" ")
+                                              )
+
+                                          it "should call `next`", ->
+                                              @doIt()
+
+                                              @tokenNext.should.have.been.calledWithExactly()
+
+                                      describe "when `grantScopes` calls back with `true`", ->
+                                          beforeEach -> @grantScopes.yields(null, true)
+
+                                          it "should send a response with access_token, token_type, scope, and " +
+                                             "expires_in set, where scope is the same as the requested scopes", ->
+                                              @doIt()
+
+                                              @res.send.should.have.been.calledWith(
+                                                  access_token: @token,
+                                                  token_type: "Bearer"
+                                                  expires_in: tokenExpirationTime,
+                                                  scope: @requestedScopes.join(" ")
+                                              )
+
+                                          it "should call `next`", ->
+                                              @doIt()
+
+                                              @tokenNext.should.have.been.calledWithExactly()
+
+                                      describe "when `grantScopes` calls back with `false`", ->
+                                          beforeEach -> @grantScopes.yields(null, false)
+
+                                          it "should send a 400 response with error_type=invalid_scope", ->
+                                              @doIt()
+
+                                              message = "The requested scopes are invalid, unknown, or exceed the " +
+                                                        "set of scopes appropriate for these credentials."
+                                              @res.should.be.an.oauthError("BadRequest", "invalid_scope", message)
+
+                                      describe "when `grantScopes` calls back with an error", ->
+                                          beforeEach ->
+                                              @error = new Error("Bad things happened, internally.")
+                                              @grantScopes.yields(@error)
+
+                                          it "should call `next` with that error", ->
+                                              @doIt()
+
+                                              @tokenNext.should.have.been.calledWithExactly(@error)
+
+                                  describe "and a `grantScopes` hook is not defined", ->
+                                      beforeEach -> @grantScopes = undefined
+
+                                      it "should send a response with access_token, token_type, and expires_in " +
+                                         "set", ->
+                                          @doIt()
+
+                                          @res.send.should.have.been.calledWith(
+                                              access_token: @token,
+                                              token_type: "Bearer"
+                                              expires_in: tokenExpirationTime
+                                          )
+
+                                      it "should call `next`", ->
+                                          @doIt()
+
+                                          @tokenNext.should.have.been.calledWithExactly()
+
+                              describe "when `grantUserToken` calls back with `false`", ->
+                                  beforeEach -> @grantUserToken.yields(null, false)
+
+                                  it "should send a 401 response with error_type=invalid_grant", ->
+                                      @doIt()
+
+                                      @res.should.be.an.oauthError("Unauthorized", "invalid_grant",
+                                                                   "Refresh token did not authenticate.")
+
+                              describe "when `grantUserToken` calls back with `null`", ->
+                                  beforeEach -> @grantUserToken.yields(null, null)
+
+                                  it "should send a 401 response with error_type=invalid_grant", ->
+                                      @doIt()
+
+                                      @res.should.be.an.oauthError("Unauthorized", "invalid_grant",
+                                                                   "Refresh token did not authenticate.")
+
+                              describe "when `grantUserToken` calls back with an error", ->
+                                  beforeEach ->
+                                      @error = new Error("Bad things happened, internally.")
+                                      @grantUserToken.yields(@error)
+
+                                  it "should call `next` with that error", ->
+                                      @doIt()
+
+                                      @tokenNext.should.have.been.calledWithExactly(@error)
+
+                          describe "when `validateClient` calls back with `false`", ->
+                              beforeEach -> @validateClient.yields(null, false)
+
+                              it "should send a 401 response with error_type=invalid_client and a WWW-Authenticate " +
+                                 "header", ->
+                                  @doIt()
+
+                                  @res.header.should.have.been.calledWith(
+                                      "WWW-Authenticate",
+                                      'Basic realm="Client ID and secret did not validate."'
+                                  )
+                                  @res.should.be.an.oauthError("Unauthorized", "invalid_client",
+                                                               "Client ID and secret did not validate.")
+
+                              it "should not call the `grantUserToken` hook", ->
+                                  @doIt()
+
+                                  @grantUserToken.should.not.have.been.called
+
+                          describe "when `validateClient` calls back with an error", ->
+                              beforeEach ->
+                                  @error = new Error("Bad things happened, internally.")
+                                  @validateClient.yields(@error)
+
+                              it "should call `next` with that error", ->
+                                  @doIt()
+
+                                  @tokenNext.should.have.been.calledWithExactly(@error)
+
+                              it "should not call the `grantUserToken` hook", ->
+                                  @doIt()
+
+                                  @grantUserToken.should.not.have.been.called
+
+                    describe "that has no refresh_token field", ->
+                        beforeEach -> @req.body.refresh_token = null
+
+                        it "should send a 400 response with error_type=invalid_request", ->
+                            @doIt()
+
+                            @res.should.be.an.oauthError("BadRequest", "invalid_request", "Must specify refresh_token field.")
+
+                        it "should not call the `validateClient` or `grantUserToken` hooks", ->
+                            @doIt()
+
+                            @validateClient.should.not.have.been.called
+                            @grantUserToken.should.not.have.been.called
+
                 describe "without an authorization header", ->
                     it "should send a 400 response with error_type=invalid_request", ->
                         @doIt()
